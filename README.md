@@ -1,6 +1,6 @@
 # Recotrack - Recommendation System
 
-Hệ thống đề xuất sản phẩm (Recommendation System) với architecture microservices dùng Docker Compose.
+Hệ thống khuyến nghị được xây dựng dưới dạng Pluggable Module
 
 ## 📋 Tổng quan dự án
 
@@ -220,14 +220,10 @@ docker build -t recommender-api .
 docker run -p 8000:8000 recommender-api
 ```
 
-### Hot reload
-
-Clients hỗ trợ hot-reload qua volume mounting. Thay đổi code sẽ tự động load lại.
-
 ### Scripts hữu ích
 
 ```bash
-# Xóa tất cả Docker data (⚠️ Cẩn thận!)
+# Xóa tất cả Docker data
 docker system prune -a
 
 # Xem resource usage
