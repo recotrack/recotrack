@@ -1,0 +1,498 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum TernantRole {
+  CUSTOMER
+  ADMIN
+}
+
+model Ternant {
+  Id       Int    @id @default(autoincrement())
+  Name     String
+  Username String @unique
+  Password String
+  Role TernantRole @default(CUSTOMER)
+
+  Domains Domain[]
+}
+
+model Domain {
+  Id        Int      @id @default(autoincrement())
+  Key       String   @unique
+  Url       String
+  Type      Int?
+  CreatedAt DateTime @default(now()) @db.Timestamptz
+
+  TernantID Int
+  Ternant   Ternant @relation(fields: [TernantID], references: [Id])
+
+  TrackingRules TrackingRule[]
+  ReturnMethods ReturnMethod[]
+  Interactions  Interaction[]
+  Items         Item[]
+  Users         User[]
+  Ratings       Rating[]
+  Models        Model[]
+  SearchKeywordConfigs SearchKeywordConfig[]
+  UserIdentities UserIdentity[]
+  Evaluations Evaluation[]
+}
+
+// model DomainReturn {
+//   DomainID          Int
+//   SlotName          String
+//   Value             String?
+//   TargetUrl         String?
+
+//   Domain            Domain       @relation(fields: [DomainID], references: [Id])
+
+//   ReturnMethodID    Int
+//   ReturnMethod      ReturnMethod @relation(fields: [ReturnMethodID], references: [Id])
+
+//   @@id([DomainID, SlotName])
+// }
+
+enum ReturnType {
+  POPUP
+  INLINE_INJECTION
+}
+
+model ReturnMethod {
+  Id Int @id @default(autoincrement())
+
+  DomainID Int
+  Domain   Domain @relation(fields: [DomainID], references: [Id])
+  
+  ReturnType        ReturnType
+  Value             String
+  ConfigurationName String
+
+  Customizing Json?
+  Layout      Json?
+  Style       Json?
+  Delay       Float?
+}
+
+// model ReturnMethod {
+//   Id   Int    @id @default(autoincrement())
+//   Name String
+
+//   DomainReturns DomainReturn[]
+// }
+
+model TrackingRule {
+  Id   Int    @id @default(autoincrement())
+  Name String
+
+  DomainID Int
+  Domain   Domain @relation(fields: [DomainID], references: [Id])
+
+  // TriggerEventID Int
+  // TriggerEvent   TriggerEvent @relation(fields: [TriggerEventID], references: [Id])
+
+  EventTypeID Int
+  EventType   EventType @relation(fields: [EventTypeID], references: [Id])
+
+  TrackingTarget String?
+
+  ActionType ActionType?
+
+  Events          Event[]
+  PayloadMappings PayloadMapping[]
+}
+
+model Evaluation {
+  Id Int @id @default(autoincrement())
+
+  DomainId Int
+  Domain Domain @relation(fields: [DomainId], references: [Id])
+
+  Rank Int
+  Timestamp DateTime @db.Timestamptz
+}
+
+// model TriggerEvent {
+//   Id   Int    @id @default(autoincrement())
+//   Name String
+
+//   Rules        Rule[]
+//   Interactions Interaction[]
+// }
+
+enum ActionType {
+  View
+  AddToFavorite
+  AddToWishlist
+  AddToCart
+  Purchase
+  Submit
+}
+
+model EventType {
+  Id   Int    @id @default(autoincrement())
+  Name String
+
+  TrackingRules TrackingRule[]
+  // Interactions  Interaction[]
+  Events        Event[]
+}
+
+// model PayloadConfig {
+//   Id               Int @id @default(autoincrement())
+//   PayloadPatternID Int
+//   TrackingRuleID   Int
+
+//   Value String?
+//   Type  String?
+
+//   PayloadPattern PayloadPattern @relation(fields: [PayloadPatternID], references: [Id])
+//   TrackingRule   TrackingRule   @relation(fields: [TrackingRuleID], references: [Id])
+
+//   OperatorID Int
+//   Operator   Operator @relation(fields: [OperatorID], references: [Id])
+// }
+
+// model PayloadPattern {
+//   Id   Int     @id @default(autoincrement())
+//   Name String
+//   Type String?
+
+//   PayloadConfigs PayloadConfig[]
+// }
+
+// enum PayloadField {
+//   UserId
+//   Username
+//   ItemId
+//   ItemTitle
+//   Value
+//   AnonymousId
+// }
+
+// enum PayloadSource {
+//   RequestBody
+//   Element
+//   Cookie
+//   LocalStorage
+//   SessionStorage
+//   Url
+//   RequestUrl
+// }
+
+// enum PayloadRequestMethod {
+//   GET
+//   POST
+//   PUT
+//   PATCH
+// }
+
+// enum PayloadUrlPart {
+//   QueryParam
+//   PathName
+//   Hash
+// }
+
+// model PayloadMapping {
+//   Id     Int           @id @default(autoincrement())
+//   Field  PayloadField
+//   Source PayloadSource
+//   Value  String?
+
+//   RequestUrl String?
+
+//   RequestUrlPattern String?
+//   RequestMethod     PayloadRequestMethod?
+//   RequestBodyPath   String?
+//   UrlPart           PayloadUrlPart?
+//   UrlPartValue      String?
+
+//   TrackingRuleId Int
+//   TrackingRule   TrackingRule @relation(fields: [TrackingRuleId], references: [Id])
+// }
+// enum ItemIdentitySource {
+//   request_body
+//   request_url
+// }
+
+// model ItemIdentity {
+//   Id Int @id @default(autoincrement())
+
+//   Source ItemIdentitySource
+
+//   TrackingRuleId Int
+//   TrackingRule   TrackingRule @relation(fields: [TrackingRuleId], references: [Id])
+
+//   RequestConfig Json?
+// }
+
+enum PayloadMappingField {
+  ItemId
+  Rating
+  Review
+}
+
+enum PayloadMappingSource {
+  request_body
+  request_url
+  page_url
+  element
+}
+
+model PayloadMapping {
+  Id Int @id @default(autoincrement())
+  Field PayloadMappingField
+  Source PayloadMappingSource
+  Config Json
+
+  TrackingRuleId Int
+  TrackingRule TrackingRule @relation(fields: [TrackingRuleId], references: [Id])
+}
+
+enum UserIdentitySource {
+  request_body
+  local_storage
+  session_storage
+  cookie
+  element
+}
+
+enum UserIdentityField {
+  UserId
+  AnonymousId
+}
+
+model UserIdentity {
+  Id Int @id @default(autoincrement())
+
+  Source UserIdentitySource
+
+  DomainId Int
+  Domain Domain @relation(fields: [DomainId], references: [Id])
+
+  RequestConfig Json?
+  Value         String?
+  // IsActivated Boolean @default(false)
+  Field UserIdentityField?
+}
+
+model Operator {
+  Id   Int    @id @default(autoincrement())
+  Name String
+}
+
+enum EventUserField {
+  UserId
+  Username
+  AnonymousId
+}
+
+// enum EventItemField {
+//   ItemId
+//   ItemTitle
+// }
+
+model Event {
+  Id Int @id @default(autoincrement())
+
+  EventTypeId Int
+  EventType   EventType @relation(fields: [EventTypeId], references: [Id])
+
+  // UserField EventUserField
+  // UserValue String
+
+  UserId      String?
+  AnonymousId String?
+
+  // ItemField EventItemField
+  // ItemValue String
+  ItemId  String?
+
+  RatingValue Int?
+  ReviewValue String?
+
+  Timestamp DateTime @db.Timestamptz
+
+  TrackingRuleId Int
+  TrackingRule   TrackingRule @relation(fields: [TrackingRuleId], references: [Id])
+}
+
+model SearchKeywordConfig {
+  Id Int @id @default(autoincrement())
+
+  DomainID Int
+  Domain   Domain @relation(fields: [DomainID], references: [Id])
+
+  ConfigurationName String
+  InputSelector String
+}
+
+model Category {
+  Id   Int    @id @default(autoincrement())
+  Name String @unique
+
+  ItemCategories ItemCategory[]
+}
+
+model ItemCategory {
+  CategoryId Int
+  ItemId     Int
+  Category   Category @relation(fields: [CategoryId], references: [Id])
+  Item       Item     @relation(fields: [ItemId], references: [Id])
+
+  @@id([CategoryId, ItemId])
+}
+
+model Item {
+  Id           Int     @id @default(autoincrement())
+  DomainItemId String?
+  Title        String?
+
+  DomainId Int
+  Domain   Domain @relation(fields: [DomainId], references: [Id])
+
+  Description     String?
+  EmbeddingVector Float[]
+  ModifiedAt      DateTime @updatedAt @db.Timestamptz
+  ImageUrl        String?
+
+  Attributes Json?
+
+  ItemCategories ItemCategory[]
+  ItemFactors    ItemFactor[]
+  Predicts       Predict[]
+  Ratings        Rating[]
+  interactions   Interaction[]
+
+  @@unique([DomainId, DomainItemId])
+}
+
+model Model {
+  Id                  Int      @id @default(autoincrement())
+  Name                String
+  Description         String?
+  AverageRating       Float?
+  LearnableParameters Float[]
+  ModifiedAt          DateTime @default(now()) @updatedAt @db.Timestamptz
+
+  DomainId Int
+  Domain   Domain @relation(fields: [DomainId], references: [Id])
+
+  ItemFactors ItemFactor[]
+  UserFactors UserFactor[]
+
+  @@unique([DomainId, Name])
+}
+
+model ItemFactor {
+  Id Int @id @default(autoincrement())
+
+  ItemId Int
+  Item   Item @relation(fields: [ItemId], references: [Id])
+
+  ModelId Int
+  Model   Model @relation(fields: [ModelId], references: [Id])
+
+  ItemBias    Float?
+  ItemFactors Float[]
+
+  @@unique([ItemId, ModelId])
+}
+
+model User {
+  Id          Int     @id @default(autoincrement())
+  UserId      String?
+  AnonymousId String?
+
+  DomainId Int
+  Domain   Domain @relation(fields: [DomainId], references: [Id])
+
+  UserEmbeddingVector Float[]
+  CreatedAt           DateTime @default(now()) @db.Timestamptz
+  ModifiedAt          DateTime @default(now()) @updatedAt @db.Timestamptz
+
+  UserFactors  UserFactor[]
+  Predicts     Predict[]
+  Ratings      Rating[]
+  Interactions Interaction[]
+  // @@unique([DomainId, DomainUserId])
+
+  @@unique([AnonymousId, UserId, DomainId])
+}
+
+model UserFactor {
+  Id Int @id @default(autoincrement())
+
+  UserId Int
+  User   User @relation(fields: [UserId], references: [Id])
+
+  ModelId Int
+  Model   Model @relation(fields: [ModelId], references: [Id])
+
+  UserBias    Float?
+  UserFactors Float[]
+
+  @@unique([UserId, ModelId])
+}
+
+model Predict {
+  UserId Int
+  User   User  @relation(fields: [UserId], references: [Id])
+  ItemId Int
+  Item   Item  @relation(fields: [ItemId], references: [Id])
+  Value  Float
+
+  @@id([UserId, ItemId])
+}
+
+model Rating {
+  Id Int @id @default(autoincrement())
+
+  UserId Int
+  User   User? @relation(fields: [UserId], references: [Id])
+
+  ItemId Int
+  Item   Item @relation(fields: [ItemId], references: [Id])
+
+  DomainId Int
+  Domain   Domain @relation(fields: [DomainId], references: [Id])
+
+  Value          Float?
+  ReviewText     String?
+  ConvertedScore Float    @default(3)
+  CreatedAt      DateTime @default(now()) @db.Timestamptz
+
+  @@unique([UserId, ItemId])
+}
+
+model Interaction {
+  Id Int @id @default(autoincrement())
+
+  UserId Int
+  User   User? @relation(fields: [UserId], references: [Id])
+
+  ItemId Int
+  Item   Item @relation(fields: [ItemId], references: [Id])
+
+  InteractionTypeId Int?
+  // InteractionType   EventType @relation(fields: [InteractionTypeId], references: [Id])
+
+  DomainId Int
+  Domain   Domain @relation(fields: [DomainId], references: [Id])
+
+  CreatedAt DateTime @default(now()) @db.Timestamptz
+
+  @@unique([UserId, ItemId, InteractionTypeId])
+}

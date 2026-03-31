@@ -1,0 +1,90 @@
+import typescript from '@rollup/plugin-typescript';
+import replace from '@rollup/plugin-replace';
+import { defineConfig } from 'rollup';
+import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
+
+// Load environment variables
+dotenv.config();
+
+// Plugin to generate loader.js after build
+function generateLoader() {
+  return {
+    name: 'generate-loader',
+    writeBundle() {
+      const loaderContent = `(function(d,w){
+  // Create stub to queue calls before SDK loads
+  w.RecSysTracker = w.RecSysTracker || function(){
+    (w.RecSysTracker.q = w.RecSysTracker.q || []).push(arguments);
+  };
+  
+  // Store domain key from global variable
+  w.RecSysTracker.domainKey = w.__RECSYS_DOMAIN_KEY__;
+
+  // Load the IIFE bundle
+  var s = d.createElement("script");
+  s.async = true;
+  s.src = (d.currentScript && d.currentScript.src) 
+    ? d.currentScript.src.replace('loader.js', 'recsys-tracker.iife.js')
+    : "recsys-tracker.iife.js";
+  d.head.appendChild(s);
+})(document, window);
+`;
+
+      const distPath = path.resolve('dist', 'loader.js');
+      fs.writeFileSync(distPath, loaderContent, 'utf8');
+    }
+  };
+}
+
+export default defineConfig({
+  input: 'src/index.ts',
+  output: [
+    // UMD build - for <script> tags and AMD/CommonJS
+    {
+      file: 'dist/recsys-tracker.umd.js',
+      format: 'umd',
+      name: 'RecSysTracker',
+      sourcemap: true,
+      exports: 'named',
+    },
+    // IIFE build - for direct <script> tag with auto-execution
+    {
+      file: 'dist/recsys-tracker.iife.js',
+      format: 'iife',
+      name: 'RecSysTracker',
+      sourcemap: true,
+      exports: 'named',
+    },
+    // ESM build - for modern import/export
+    {
+      file: 'dist/recsys-tracker.esm.js',
+      format: 'es',
+      sourcemap: true,
+      exports: 'named',
+    },
+    // CommonJS build - for Node.js require()
+    {
+      file: 'dist/recsys-tracker.cjs.js',
+      format: 'cjs',
+      sourcemap: true,
+      exports: 'named',
+    },
+  ],
+  plugins: [
+    replace({
+      preventAssignment: true,
+      'process.env.MODULE_API_URL': JSON.stringify(process.env.MODULE_API_URL || ''),
+      'process.env.WEB_CONFIG_API_URL': JSON.stringify(process.env.WEB_CONFIG_API_URL || ''),
+    }),
+    typescript({
+      tsconfig: './tsconfig.json',
+      declaration: true,
+      declarationDir: './dist',
+      exclude: ['**/*.test.ts', 'node_modules/**'],
+    }),
+    generateLoader(),
+  ],
+  external: [],
+});

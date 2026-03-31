@@ -1,0 +1,643 @@
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { UserField } from 'src/common/enums/event.enum';
+import { firstValueFrom } from 'rxjs';
+import { HttpService } from '@nestjs/axios';
+import { Event, Item, User } from 'src/generated/prisma/client';
+import { SearchService } from '../search/search.service';
+import { CACHE_MANAGER, CacheModule } from '@nestjs/cache-manager';
+import type { Cache } from 'cache-manager';
+
+@Injectable()
+export class RecommendationService {
+    private readonly logger = new Logger(RecommendationService.name);
+    constructor(
+        private readonly prisma: PrismaService,
+        private readonly httpService: HttpService,
+        private readonly searchService: SearchService,
+        @Inject(CACHE_MANAGER) private cacheManager: Cache,
+    ) {}
+
+    private shuffleArray(array: any[]) {
+        for (let i = array.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [array[i], array[j]] = [array[j], array[i]];
+        }
+        return array;
+    }
+
+    async getRecommendations(
+        domainKey: string,
+        numberItems: number = 10,
+        anonymousId?: string,
+        userId?: string,
+    ) {
+        const domain = await this.prisma.domain.findUnique({
+            where: { Key: domainKey },
+        });
+        if (!domain) {
+            throw new NotFoundException(
+                `Domain with key '${domainKey}' does not exist.`,
+            );
+        }
+        let user: User | null = null;
+        let itemHistory: Event[] | null = null;
+        let keyword: string = '';
+        let lastItem: string = '';
+
+        if (userId) {
+            user = await this.prisma.user.findFirst({
+                where: {
+                    UserId: userId,
+                    DomainId: domain.Id,
+                },
+            });
+
+            const fifteenMinutesAgo = new Date(
+                Date.now() - 15 * 60 * 1000 + 7 * 60 * 60 * 1000,
+            );
+
+            itemHistory = await this.prisma.event.findMany({
+                where: {
+                    UserId: userId,
+                    TrackingRule: {
+                        DomainID: domain.Id,
+                    },
+                    Timestamp: {
+                        gte: fifteenMinutesAgo,
+                    },
+                },
+                orderBy: {
+                    Timestamp: 'desc',
+                },
+                take: 10,
+            });
+        } else {
+            user = await this.prisma.user.findFirst({
+                where: {
+                    AnonymousId: anonymousId,
+                    DomainId: domain.Id,
+                },
+            });
+
+            const fifteenMinutesAgo = new Date(
+                Date.now() - 15 * 60 * 1000 + 7 * 60 * 60 * 1000,
+            );
+
+            itemHistory = await this.prisma.event.findMany({
+                where: {
+                    AnonymousId: anonymousId,
+                    TrackingRule: {
+                        DomainID: domain.Id,
+                    },
+                    Timestamp: {
+                        gte: fifteenMinutesAgo,
+                    },
+                },
+                orderBy: {
+                    Timestamp: 'desc',
+                },
+                take: 10,
+            });
+        }
+        if (!user) {
+            // return top k items based on other user
+            const topItemsByAvgPredict = await this.prisma.predict.groupBy({
+                where: {
+                    Item: {
+                        DomainId: domain.Id,
+                    },
+                },
+                by: ['ItemId'],
+                _avg: {
+                    Value: true,
+                },
+                orderBy: {
+                    _avg: {
+                        Value: 'desc',
+                    },
+                },
+                take: numberItems * 2,
+            });
+
+            if (!topItemsByAvgPredict || topItemsByAvgPredict.length <= 0) {
+                const allEligibleItems = await this.prisma.item.findMany({
+                    where: { DomainId: domain.Id },
+                    select: { Id: true },
+                });
+
+                const randomIds = this.shuffleArray(
+                    allEligibleItems.map((i) => i.Id),
+                ).slice(0, numberItems);
+                let recommendation = await this.prisma.item.findMany({
+                    where: { Id: { in: randomIds } },
+                    select: {
+                        Id: true,
+                        DomainItemId: true,
+                        Title: true,
+                        Description: true,
+                        ImageUrl: true,
+                        ItemCategories: {
+                            select: {
+                                Category: { select: { Name: true } },
+                            },
+                        },
+                        Attributes: true,
+                    },
+                });
+
+                let item = recommendation.map((item) => ({
+                    Id: item?.Id,
+                    DomainItemId: item?.DomainItemId,
+                    Title: item?.Title,
+                    Description: item?.Description,
+                    ImageUrl: item?.ImageUrl,
+                    Categories: item?.ItemCategories.map(
+                        (ic) => ic.Category.Name,
+                    ),
+                    ...((item?.Attributes as Record<string, any>) || {}),
+                }));
+
+                return {
+                    item: item,
+                    keyword: keyword,
+                    lastItem: lastItem,
+                };
+            }
+
+            const topItemIds = topItemsByAvgPredict.map((item) => item.ItemId);
+
+            let recommendations = topItemIds.map((itemId, index) => ({
+                ItemId: itemId,
+                Value: topItemsByAvgPredict[index]._avg.Value || 0,
+            }));
+
+            const itemIdsToFetch = recommendations.map((r) => r.ItemId);
+
+            const fetchedItems = await this.prisma.item.findMany({
+                where: {
+                    Id: { in: itemIdsToFetch },
+                },
+                select: {
+                    Id: true,
+                    DomainItemId: true,
+                    Title: true,
+                    Description: true,
+                    ImageUrl: true,
+                    ItemCategories: {
+                        select: {
+                            Category: { select: { Name: true } },
+                        },
+                    },
+                    Attributes: true,
+                },
+            });
+
+            const itemMap = new Map();
+            for (const item of fetchedItems) {
+                itemMap.set(item.Id, item);
+            }
+
+            const detailedRecommendations = recommendations
+                .map((recommendation) => {
+                    const item = itemMap.get(recommendation.ItemId);
+
+                    if (!item) return null;
+
+                    return {
+                        Id: item.Id,
+                        DomainItemId: item.DomainItemId,
+                        Title: item.Title,
+                        Description: item.Description,
+                        ImageUrl: item.ImageUrl,
+                        Categories: item.ItemCategories.map(
+                            (ic) => ic.Category.Name,
+                        ),
+                        ...((item.Attributes as Record<string, any>) || {}),
+                    };
+                })
+                .filter((item) => item !== null);
+
+            return {
+                item: detailedRecommendations.slice(0, numberItems),
+                search: '',
+                lastItem: '',
+            };
+        }
+
+        let priorityCategoryIds: number[] = [];
+
+        if (itemHistory && itemHistory.length > 0) {
+            this.logger.log(
+                `Found ${itemHistory.length} events in history (within 15 min window)`,
+            );
+            const lastItemId = itemHistory[0].ItemId || '';
+            if (lastItemId) {
+                const lastItemInfo = await this.prisma.item.findFirst({
+                    where: {
+                        DomainItemId: lastItemId,
+                        DomainId: domain.Id,
+                    },
+                    select: {
+                        Title: true,
+                    },
+                });
+                lastItem = lastItemInfo?.Title || '';
+            }
+
+            const historyDomainItemIds = itemHistory
+                .map((event) => event.ItemId)
+                .filter((id): id is string => id !== null);
+
+            if (historyDomainItemIds.length > 0) {
+                const categories = await this.prisma.itemCategory.findMany({
+                    where: {
+                        Item: {
+                            DomainItemId: { in: historyDomainItemIds },
+                        },
+                    },
+                    select: {
+                        CategoryId: true,
+                    },
+                    distinct: ['CategoryId'],
+                });
+
+                priorityCategoryIds = categories.map((c) => c.CategoryId);
+                this.logger.log(
+                    `Priority category IDs from history: [${priorityCategoryIds.join(', ')}]`,
+                );
+            }
+        }
+
+        const cacheKeywordKey = `recommendation_keyword_${user.Id}`;
+        const cachedKeyword =
+            await this.cacheManager.get<string>(cacheKeywordKey);
+
+        let priorityItems: any[] = [];
+        let allItems: any[] = [];
+
+        // Get all items for this user
+        allItems = await this.prisma.predict.findMany({
+            where: { UserId: user.Id },
+            orderBy: { Value: 'desc' },
+        });
+
+        this.logger.log(
+            `User ${user.Id} has ${allItems.length} predict items in database`,
+        );
+
+        if (cachedKeyword || priorityCategoryIds.length > 0) {
+            const keywordToSearch = cachedKeyword || '';
+
+            if (cachedKeyword) {
+                this.logger.log(`Cache hit keyword: "${cachedKeyword}"`);
+                keyword = cachedKeyword;
+            } else {
+                this.logger.log(
+                    `No cache keyword, searching by Priority Categories: [${priorityCategoryIds.join(', ')}]`,
+                );
+            }
+
+            const searchResult = await this.searchService.search(
+                domain.Id,
+                keywordToSearch,
+                priorityCategoryIds,
+            );
+
+            this.logger.log(
+                `Search returned ${searchResult.items?.length || 0} items`,
+            );
+
+            // If no predict data, use search results directly
+            if (allItems.length === 0 && searchResult.items?.length > 0) {
+                this.logger.log(
+                    `No predict data available, using search results directly`,
+                );
+
+                const ratedItems = await this.prisma.rating.findMany({
+                    where: { UserId: user.Id },
+                });
+                const ratedItemsIds = ratedItems.map((item) => item.ItemId);
+
+                // Get items from search results that haven't been rated
+                const searchItemIds = searchResult.items
+                    .map((item) => item.id)
+                    .filter((id) => !ratedItemsIds.includes(id));
+
+                // If not enough from search, get more items from domain
+                let finalItemIds = searchItemIds.slice(0, numberItems);
+
+                if (finalItemIds.length < numberItems) {
+                    const needed = numberItems - finalItemIds.length;
+                    const additionalItemsObj = await this.prisma.item.findMany({
+                        where: {
+                            DomainId: domain.Id,
+                            Id: { notIn: [...searchItemIds, ...ratedItemsIds] },
+                        },
+                        select: { Id: true },
+                    });
+
+                    const randomAdditionalIds = this.shuffleArray(
+                        additionalItemsObj.map((i) => i.Id),
+                    ).slice(0, needed);
+                    finalItemIds = [...finalItemIds, ...randomAdditionalIds];
+                }
+
+                const fetchedItemsSearch = await this.prisma.item.findMany({
+                    where: { Id: { in: finalItemIds } },
+                    select: {
+                        Id: true,
+                        DomainItemId: true,
+                        Title: true,
+                        Description: true,
+                        ImageUrl: true,
+                        ItemCategories: {
+                            select: {
+                                Category: { select: { Name: true } },
+                            },
+                        },
+                        Attributes: true,
+                    },
+                });
+
+                const searchItemMap = new Map();
+                for (const item of fetchedItemsSearch) {
+                    searchItemMap.set(item.Id, item);
+                }
+
+                const detailedRecommendations = finalItemIds
+                    .map((itemId) => {
+                        const item = searchItemMap.get(itemId);
+                        if (!item) return null;
+
+                        return {
+                            Id: item.Id,
+                            DomainItemId: item.DomainItemId,
+                            Title: item.Title,
+                            Description: item.Description,
+                            ImageUrl: item.ImageUrl,
+                            Categories: item.ItemCategories.map(
+                                (ic) => ic.Category.Name,
+                            ),
+                            ...((item.Attributes as Record<string, any>) || {}),
+                        };
+                    })
+                    .filter((item) => item !== null);
+
+                return {
+                    items: detailedRecommendations,
+                    search: keyword,
+                    lastItem: lastItem,
+                };
+            }
+
+            const priorityItemIds = searchResult.items.map((item) => item.id);
+            this.logger.log(
+                `Search item IDs: [${priorityItemIds.slice(0, 5).join(', ')}${priorityItemIds.length > 5 ? '...' : ''}]`,
+            );
+
+            if (allItems.length > 0) {
+                const predictItemIds = allItems
+                    .slice(0, 5)
+                    .map((p) => p.ItemId);
+                this.logger.log(
+                    `Predict item IDs (first 5): [${predictItemIds.join(', ')}]`,
+                );
+            }
+
+            // priority items (in search result) and other items
+            priorityItems = allItems.filter((item) =>
+                priorityItemIds.includes(item.ItemId),
+            );
+            const otherItems = allItems.filter(
+                (item) => !priorityItemIds.includes(item.ItemId),
+            );
+
+            // priority items first, then other items
+            allItems = [...priorityItems, ...otherItems];
+
+            this.logger.log(
+                `Found ${priorityItems.length} priority items from search, ${otherItems.length} other items`,
+            );
+        } else {
+            this.logger.log(
+                `No keyword or priority categories for user ${user.Id}`,
+            );
+        }
+
+        const ratedItems = await this.prisma.rating.findMany({
+            where: {
+                UserId: user.Id,
+            },
+        });
+
+        const ratedItemsIds = ratedItems.map((item) => item.ItemId);
+
+        let recommendations = allItems.filter(
+            (item) => !ratedItemsIds.includes(item.ItemId),
+        );
+
+        // If not enough recommendations, fetch more from average predictions
+        if (recommendations.length < numberItems) {
+            const existingItemIds = recommendations.map((r) => r.ItemId);
+
+            const topItemsByAvgPredict = await this.prisma.predict.groupBy({
+                where: {
+                    Item: {
+                        DomainId: domain.Id,
+                    },
+                },
+                by: ['ItemId'],
+                _avg: {
+                    Value: true,
+                },
+                orderBy: {
+                    _avg: {
+                        Value: 'desc',
+                    },
+                },
+                take: numberItems * 2,
+            });
+
+            const topItemIds = topItemsByAvgPredict
+                .filter(
+                    (item) =>
+                        !ratedItemsIds.includes(item.ItemId) &&
+                        !existingItemIds.includes(item.ItemId),
+                )
+                .map((item) => item.ItemId);
+
+            const additionalRecommendations = topItemIds.map((itemId) => ({
+                ItemId: itemId,
+                UserId: user!.Id,
+                Value:
+                    topItemsByAvgPredict.find((p) => p.ItemId === itemId)?._avg
+                        .Value || 0,
+            }));
+
+            recommendations = [
+                ...recommendations,
+                ...additionalRecommendations,
+            ];
+
+            // Still not enough? Get random items from domain
+            if (recommendations.length < numberItems) {
+                const allExistingIds = recommendations.map((r) => r.ItemId);
+                const needed = numberItems - recommendations.length;
+
+                const randomItemsObj = await this.prisma.item.findMany({
+                    where: {
+                        DomainId: domain.Id,
+                        Id: { notIn: [...allExistingIds, ...ratedItemsIds] },
+                    },
+                    select: { Id: true },
+                });
+
+                const trulyRandomIds = this.shuffleArray(
+                    randomItemsObj.map((i) => i.Id),
+                ).slice(0, needed);
+
+                // Add random items to recommendations
+                for (const randomId of trulyRandomIds) {
+                    recommendations.push({
+                        ItemId: randomId,
+                        UserId: user!.Id,
+                        Value: 0,
+                    });
+                }
+            }
+        }
+
+        const finalIdsToFetch = recommendations.map((r) => r.ItemId);
+
+        const finalFetchedItems = await this.prisma.item.findMany({
+            where: { Id: { in: finalIdsToFetch } },
+            select: {
+                Id: true,
+                DomainItemId: true,
+                Title: true,
+                Description: true,
+                ImageUrl: true,
+                ItemCategories: {
+                    select: {
+                        Category: { select: { Name: true } },
+                    },
+                },
+                Attributes: true,
+            },
+        });
+
+        const finalItemMap = new Map();
+        for (const item of finalFetchedItems) {
+            finalItemMap.set(item.Id, item);
+        }
+
+        const detailedRecommendations = recommendations
+            .map((recommendation) => {
+                const item = finalItemMap.get(recommendation.ItemId);
+                if (!item) return null;
+
+                return {
+                    Id: item.Id,
+                    DomainItemId: item.DomainItemId,
+                    Title: item.Title,
+                    Description: item.Description,
+                    ImageUrl: item.ImageUrl,
+                    Categories: item.ItemCategories.map(
+                        (ic) => ic.Category.Name,
+                    ),
+                    ...((item.Attributes as Record<string, any>) || {}),
+                };
+            })
+            .filter((item) => item !== null);
+
+        return {
+            item: detailedRecommendations.slice(0, numberItems),
+            keyword: keyword,
+            lastItem: lastItem,
+        };
+    }
+
+    async triggerTrainModels() {
+        const url = process.env.MODEL_URL
+            ? `${process.env.MODEL_URL}/api/train`
+            : 'http://localhost:8000/api/train';
+
+        const allDomains = await this.prisma.domain.findMany();
+
+        for (const domain of allDomains) {
+            try {
+                const response = await firstValueFrom(
+                    this.httpService.post(url, {
+                        domain_id: domain.Id,
+                    }),
+                );
+                this.logger.log(`Domain ${domain.Id} train success`);
+            } catch (error) {
+                this.logger.error(`Domain ${domain.Id} train failed`);
+            }
+        }
+    }
+
+    async pushRecommendationKeyword(
+        anonymousId: string,
+        domainKey: string,
+        keyword: string,
+        userId?: string,
+    ) {
+        const domain = await this.prisma.domain.findUnique({
+            where: { Key: domainKey },
+        });
+        if (!domain) {
+            throw new NotFoundException(
+                `Domain with key '${domainKey}' does not exist.`,
+            );
+        }
+
+        let user: User | null = null;
+
+        if (userId) {
+            user = await this.prisma.user.findFirst({
+                where: {
+                    UserId: userId,
+                    DomainId: domain.Id,
+                },
+            });
+
+            if (!user) {
+                user = await this.prisma.user.create({
+                    data: {
+                        UserId: userId,
+                        DomainId: domain.Id,
+                        CreatedAt: new Date(),
+                    },
+                });
+            }
+        } else {
+            user = await this.prisma.user.findFirst({
+                where: {
+                    AnonymousId: anonymousId,
+                    DomainId: domain.Id,
+                },
+            });
+
+            if (!user) {
+                user = await this.prisma.user.create({
+                    data: {
+                        AnonymousId: anonymousId,
+                        DomainId: domain.Id,
+                        CreatedAt: new Date(),
+                    },
+                });
+            }
+        }
+
+        const cacheKeywordKey = `recommendation_keyword_${user.Id}`;
+        const ttl = 30 * 60 * 1000; // 30 minutes in milliseconds
+
+        await this.cacheManager.set(cacheKeywordKey, keyword, ttl);
+        this.logger.log(
+            `Set recommendation keyword cache for user ${user.Id} with keyword '${keyword}'`,
+        );
+    }
+}

@@ -1,0 +1,56 @@
+name: recotrack-web-config
+services:
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: recotrack-server
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    env_file:
+      - ./server/.env
+    networks:
+      - recsys-network
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      args:
+        - WEB_CONFIG_API_BASE_URL=/api/web-config
+        - MODULE_API_BASE_URL=/api/module
+    container_name: recotrack-client
+    restart: unless-stopped
+    ports:
+      - "5174:80"
+    depends_on:
+      - server
+    networks:
+      - recsys-network
+
+  module-server:
+    container_name: recotrack-module-server
+    build:
+      context: ../recotrack-server-module/packages/server
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - ../recotrack-server-module/packages/server/.env
+    networks:
+      - recsys-network
+
+  recommender-api:
+    container_name: recommender-api
+    build:
+      context: ../recommendation-models
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    networks:
+      - recsys-network
+
+networks:
+  recsys-network:
+    driver: bridge

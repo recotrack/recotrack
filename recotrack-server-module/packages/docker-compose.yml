@@ -1,0 +1,14 @@
+name: recsys-module
+
+services:
+  recsys-module:
+    image: recsys-module
+    container_name: recsys-module-server
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./server/.env
+    restart: unless-stopped
